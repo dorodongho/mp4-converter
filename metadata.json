@@ -1,0 +1,5 @@
+{
+  "name": "Audio to Video Converter & Merger",
+  "description": "Upload multiple M4A files, merge them, convert to MP3, and finally export as a single MP4 video.",
+  "requestFramePermissions": []
+}
