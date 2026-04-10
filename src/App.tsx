@@ -23,7 +23,7 @@ import { motion, AnimatePresence } from 'motion/react';
 
 // FFmpeg configuration
 const FFMPEG_CORE_VERSION = '0.12.6';
-const baseURL = `https://unpkg.com/@ffmpeg/core@${FFMPEG_CORE_VERSION}/dist/umd`;
+const baseURL = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FFMPEG_CORE_VERSION}/dist/umd`;
 
 export default function App() {
   const [loaded, setLoaded] = useState(false);
@@ -34,12 +34,16 @@ export default function App() {
   const [status, setStatus] = useState<string>('Ready');
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isIsolated, setIsIsolated] = useState<boolean | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<{current: number, total: number}>({current: 0, total: 0});
   
   const ffmpegRef = useRef(new FFmpeg());
   const isLoadingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // Check isolation status
+    setIsIsolated(window.crossOriginIsolated);
     loadFFmpeg();
   }, []);
 
@@ -48,9 +52,9 @@ export default function App() {
     
     isLoadingRef.current = true;
     setError(null);
+    setStatus('Initializing engine...');
     
     try {
-      setStatus('Initializing engine...');
       const ffmpeg = ffmpegRef.current;
       
       ffmpeg.on('log', ({ message }) => {
@@ -61,26 +65,54 @@ export default function App() {
         setProgress(Math.round(progress * 100));
       });
 
-      // Check for SharedArrayBuffer support
-      if (!window.SharedArrayBuffer) {
-        console.warn('SharedArrayBuffer is not available.');
-      }
+      // Custom fetch with progress for the large WASM file
+      const downloadWithProgress = async (url: string, type: string) => {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to fetch ${url}`);
+        
+        const contentLength = response.headers.get('content-length');
+        const total = contentLength ? parseInt(contentLength, 10) : 0;
+        let loaded = 0;
 
+        const reader = response.body?.getReader();
+        if (!reader) return await toBlobURL(url, type);
+
+        const chunks = [];
+        while(true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          loaded += value.length;
+          if (total > 0) {
+            setDownloadProgress({ current: loaded, total: total });
+          }
+        }
+
+        const blob = new Blob(chunks, { type });
+        return URL.createObjectURL(blob);
+      };
+
+      setStatus('Downloading engine components...');
+      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await downloadWithProgress(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+
+      setStatus('Loading WASM into memory...');
       await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        coreURL,
+        wasmURL,
       });
       
       setLoaded(true);
       setStatus('Ready');
+      setError(null);
     } catch (err) {
       console.error('Failed to load FFmpeg:', err);
       let errorMsg = 'Failed to load the processing engine.';
       
       if (!window.crossOriginIsolated) {
-        errorMsg += ' (Cross-Origin Isolation is not enabled. Please try opening the app in a new tab or check browser settings.)';
+        errorMsg = 'Security Restriction: Cross-Origin Isolation is disabled. This app REQUIRES being opened in a NEW TAB to function properly.';
       } else {
-        errorMsg += ' (Network error or slow connection. Please try again.)';
+        errorMsg = 'Engine Load Error: The processing engine could not be initialized. This might be due to a slow network or browser incompatibility.';
       }
       
       setError(errorMsg);
@@ -355,7 +387,33 @@ export default function App() {
                       {status}
                     </span>
                   </div>
-                  <p className="text-sm font-medium truncate">{status === 'Ready' && files.length > 0 ? 'Ready to process' : status}</p>
+                  <p className="text-sm font-medium truncate">
+                    {status === 'Ready' && files.length > 0 ? 'Ready to process' : status}
+                  </p>
+                  
+                  {!loaded && status !== 'Error' && (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex items-center gap-2 text-[10px] text-gray-500">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>
+                          {downloadProgress.total > 0 
+                            ? `Downloading: ${Math.round((downloadProgress.current / downloadProgress.total) * 100)}%`
+                            : 'Connecting to engine CDN...'}
+                        </span>
+                      </div>
+                      {downloadProgress.total > 0 && (
+                        <div className="h-1 w-full bg-[#25262b] rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-blue-500 transition-all duration-300" 
+                            style={{ width: `${(downloadProgress.current / downloadProgress.total) * 100}%` }}
+                          />
+                        </div>
+                      )}
+                      <p className="text-[9px] text-gray-600 leading-tight">
+                        The engine is about 30MB. If it stays at 0%, please check your internet or open in a new tab.
+                      </p>
+                    </div>
+                  )}
                   
                   {processing && (
                     <div className="mt-4 space-y-2">
@@ -456,21 +514,37 @@ export default function App() {
 
             {/* Info Card */}
             <section className="bg-[#151619]/50 border border-[#2a2a2a] rounded-2xl p-6">
-              <h3 className="text-xs font-mono uppercase tracking-widest text-gray-500 mb-4">Pipeline Details</h3>
-              <ul className="space-y-3">
-                <li className="flex items-center gap-3 text-xs text-gray-400">
-                  <div className="w-1.5 h-1.5 rounded-full bg-orange-500" />
-                  Merge multiple .m4a tracks
-                </li>
-                <li className="flex items-center gap-3 text-xs text-gray-400">
-                  <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                  Convert to 192kbps MP3
-                </li>
-                <li className="flex items-center gap-3 text-xs text-gray-400">
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                  Export as H.264 MP4 (720p)
-                </li>
-              </ul>
+              <h3 className="text-xs font-mono uppercase tracking-widest text-gray-500 mb-4">Diagnostics</h3>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <span className="text-gray-500">Isolation Status</span>
+                  <span className={isIsolated ? 'text-green-500' : 'text-red-500'}>
+                    {isIsolated ? 'ENABLED' : 'DISABLED'}
+                  </span>
+                </div>
+                {!isIsolated && (
+                  <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg">
+                    <p className="text-[10px] leading-relaxed text-orange-400">
+                      ⚠️ <b>Action Required:</b> The engine cannot run inside this preview window. 
+                      Please click the <b>"Open in new tab"</b> button at the top right of the screen.
+                    </p>
+                  </div>
+                )}
+                <ul className="space-y-3 pt-2 border-t border-[#2a2a2a]">
+                  <li className="flex items-center gap-3 text-xs text-gray-400">
+                    <div className="w-1.5 h-1.5 rounded-full bg-orange-500" />
+                    Merge multiple .m4a tracks
+                  </li>
+                  <li className="flex items-center gap-3 text-xs text-gray-400">
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                    Convert to 192kbps MP3
+                  </li>
+                  <li className="flex items-center gap-3 text-xs text-gray-400">
+                    <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                    Export as H.264 MP4 (720p)
+                  </li>
+                </ul>
+              </div>
             </section>
           </div>
         </div>

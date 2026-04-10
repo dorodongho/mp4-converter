@@ -24,5 +24,8 @@ export default defineConfig(({mode}) => {
         'Cross-Origin-Embedder-Policy': 'require-corp',
       },
     },
+    optimizeDeps: {
+      exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
+    },
   };
 });
